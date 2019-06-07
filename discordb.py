@@ -1,14 +1,25 @@
 from typing import Any, List
 
-from errbot.backends.base import Person, Message, Room, RoomOccupant, Presence, ONLINE, OFFLINE, AWAY, DND
-from errbot.errBot import ErrBot
+from errbot.backends.base import Person, Message, Room, RoomOccupant, Presence, \
+    ONLINE, OFFLINE, AWAY, DND
+from errbot.core import ErrBot
 import logging
 import sys
-import discord
 import asyncio
 
 # Can't use __name__ because of Yapsy
 log = logging.getLogger('errbot.backends.discord')
+
+try:
+    import discord
+except ImportError:
+    log.exception("Could not start the Discord back-end")
+    log.fatal(
+        "You need to install the Discord API in order to use the Discord backend.\n"
+        "You can do `pip install -r requirements.txt` to install it"
+    )
+    sys.exit(1)
+
 
 # Discord message size limit.
 DISCORD_MESSAGE_SIZE_LIMIT = 2000
@@ -21,6 +32,7 @@ COLORS = {
     'white': 0xFFFFFF,
     'cyan': 0x00FFFF
 }  # Discord doesn't know its colors
+
 
 class DiscordPerson(discord.User, Person):
 
@@ -91,7 +103,7 @@ class DiscordRoom(Room):
         log.error('Not implemented')
         return True
 
-    def __init__(self, name, channel: discord.Channel=None):
+    def __init__(self, name, channel: discord.Channel = None):
         self.name = name
         self.channel = channel
 
@@ -109,7 +121,7 @@ class DiscordRoom(Room):
 
 
 class DiscordRoomOccupant(DiscordPerson, RoomOccupant):
-    def __init__(self, username=None, id_=None, discriminator=None, avatar=None, room: DiscordRoom=None):
+    def __init__(self, username=None, id_=None, discriminator=None, avatar=None, room: DiscordRoom = None):
         super().__init__(username=username, id_=id_, discriminator=discriminator, avatar=avatar)
         self._room = room
 
@@ -120,7 +132,7 @@ class DiscordRoomOccupant(DiscordPerson, RoomOccupant):
     @staticmethod
     def from_user_and_channel(user: discord.User, channel: discord.Channel):
         return DiscordRoomOccupant(username=user.name,
-                                   id_ =user.id,
+                                   id_=user.id,
                                    discriminator=user.discriminator,
                                    avatar=user.avatar,
                                    room=DiscordRoom.from_channel(channel))
@@ -128,7 +140,7 @@ class DiscordRoomOccupant(DiscordPerson, RoomOccupant):
     @staticmethod
     def from_user_and_room(user: discord.User, room: DiscordRoom):
         return DiscordRoomOccupant(username=user.name,
-                                   id_ =user.id,
+                                   id_=user.id,
                                    discriminator=user.discriminator,
                                    avatar=user.avatar,
                                    room=room)
@@ -250,9 +262,11 @@ class DiscordBackend(ErrBot):
             if msg.to.channel is None:
                 msg.to.channel = discord.utils.get(self.client.get_all_channels(), name=msg.to.name)
             recipient = msg.to.channel
-        for message in [msg.body[i:i+DISCORD_MESSAGE_SIZE_LIMIT] for i in range(0, len(msg.body), DISCORD_MESSAGE_SIZE_LIMIT)]:
+        for message in [msg.body[i:i + DISCORD_MESSAGE_SIZE_LIMIT] for i in
+                        range(0, len(msg.body), DISCORD_MESSAGE_SIZE_LIMIT)]:
             asyncio.run_coroutine_threadsafe(self.client.send_typing(recipient), loop=self.client.loop)
-            asyncio.run_coroutine_threadsafe(self.client.send_message(destination=recipient, content=message), loop=self.client.loop)
+            asyncio.run_coroutine_threadsafe(self.client.send_message(destination=recipient, content=message),
+                                             loop=self.client.loop)
 
             super().send_message(msg)
 
@@ -281,8 +295,8 @@ class DiscordBackend(ErrBot):
                 em.add_field(name=key, value=value, inline=True)
 
         asyncio.run_coroutine_threadsafe(self.client.send_typing(recipient), loop=self.client.loop)
-        asyncio.run_coroutine_threadsafe(self.client.send_message(destination=recipient, embed=em), loop=self.client.loop)
-
+        asyncio.run_coroutine_threadsafe(self.client.send_message(destination=recipient, embed=em),
+                                         loop=self.client.loop)
 
     def build_reply(self, mess, text=None, private=False, threaded=False):
         log.debug('Threading is %s' % threaded)
