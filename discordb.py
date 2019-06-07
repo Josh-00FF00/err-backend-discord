@@ -33,34 +33,30 @@ COLORS = {
 }  # Discord doesn't know its colors
 
 
-class DiscordPerson(discord.User, Person):
+class DiscordPerson(Person):
 
-    def __init__(self, username=None, id_=None, discriminator=None, avatar=None):
-        super().__init__(username=username, id=id_, discriminator=discriminator, avatar=avatar)
+    def __init__(self, user: discord.User):
+        self.user = user
 
     @property
     def person(self) -> str:
-        return self.discriminator
+        return self.user.discriminator
 
     @property
     def aclattr(self) -> str:
-        return self.id
+        return self.user.id
 
     @property
     def nick(self) -> str:
-        return self.name
+        return self.user.name
 
     @property
     def fullname(self) -> str:
-        return self.name
+        return self.user.name
 
     @property
     def client(self) -> str:
-        return self.id
-
-    @staticmethod
-    def from_user(user: discord.User):
-        return DiscordPerson(user.name, user.id, user.discriminator, user.avatar)
+        return self.user.id
 
     def __eq__(self, other):
         return isinstance(other, DiscordPerson) and other.person == self.person
@@ -119,36 +115,21 @@ class DiscordRoom(Room):
         return other.name == self.name
 
 
-class DiscordRoomOccupant(DiscordPerson, RoomOccupant):
-    def __init__(self, username=None, id_=None, discriminator=None, avatar=None, room: DiscordRoom = None):
-        super().__init__(username=username, id_=id_, discriminator=discriminator, avatar=avatar)
-        self._room = room
+class DiscordRoomOccupant(RoomOccupant):
+
+    def __init__(self, member: discord.Member, channel: discord.TextChannel):
+        self._channel = channel
+        self.member = member
 
     @property
     def room(self) -> Any:
-        return self._room
-
-    @staticmethod
-    def from_user_and_channel(user: discord.User, channel: discord.TextChannel):
-        return DiscordRoomOccupant(username=user.name,
-                                   id_=user.id,
-                                   discriminator=user.discriminator,
-                                   avatar=user.avatar,
-                                   room=DiscordRoom.from_channel(channel))
-
-    @staticmethod
-    def from_user_and_room(user: discord.User, room: DiscordRoom):
-        return DiscordRoomOccupant(username=user.name,
-                                   id_=user.id,
-                                   discriminator=user.discriminator,
-                                   avatar=user.avatar,
-                                   room=room)
+        return self._channel
 
     def __eq__(self, other):
         return isinstance(other, DiscordRoomOccupant) and str(other) == str(self)
 
     def __str__(self):
-        return super().__str__() + '@' + self._room.name
+        return super().__str__() + '@' + self._channel.name
 
 
 class DiscordBackend(ErrBot):
@@ -175,30 +156,32 @@ class DiscordBackend(ErrBot):
 
     async def on_ready(self):
         log.debug('Logged in as %s, %s' % (self.client.user.name, self.client.user.id))
-        self.bot_identifier = DiscordPerson.from_user(self.client.user)
+        if self.bot_identifier is None:
+            self.bot_identifier = DiscordPerson(self.client.user)
 
         for channel in self.client.get_all_channels():
             log.debug('Found channel: %s', channel)
 
     async def on_message(self, msg: discord.Message):
         err_msg = Message(msg.content)
-        if msg.channel.is_private:
-            err_msg.frm = DiscordPerson.from_user(msg.author)
+
+        if isinstance(msg.channel, discord.abc.PrivateChannel):
+            err_msg.frm = DiscordPerson(msg.author)
             err_msg.to = self.bot_identifier
         else:
             err_msg.to = DiscordRoom.from_channel(msg.channel)
-            err_msg.frm = DiscordRoomOccupant.from_user_and_channel(msg.author, msg.channel)
+            err_msg.frm = DiscordRoomOccupant(msg.author, msg.channel)
 
         log.debug('Received message %s' % msg)
         self.callback_message(err_msg)
         if msg.mentions:
             self.callback_mention(err_msg,
-                                  [DiscordRoomOccupant.from_user_and_channel(mention, msg.channel)
+                                  [DiscordRoomOccupant(mention, msg.channel)
                                    for mention in msg.mentions])
 
     async def on_member_update(self, before, after):
         if before.status != after.status:
-            person = DiscordPerson.from_user(after)
+            person = DiscordPerson(after)
 
             log.debug('Person %s changed status to %s from %s' % (person, after.status, before.status))
 
@@ -245,10 +228,10 @@ class DiscordBackend(ErrBot):
             discriminator = None
 
         if room:
-            return DiscordRoomOccupant(username=user, discriminator=discriminator,
-                                       room=DiscordRoom(room))
+            pass
+            #return DiscordRoomOccupant(self.client.get_user(1), DiscordRoom(room))
 
-        return DiscordPerson(username=user, discriminator=discriminator)
+        return DiscordPerson(self.client.get_user(1))
 
     def query_room(self, room):
         return self.build_identifier(room)  # backward compatibility.
@@ -259,16 +242,15 @@ class DiscordBackend(ErrBot):
         if msg.is_direct:
             recipient = msg.to
         else:
-            if msg.to.channel is None:
-                msg.to.channel = discord.utils.get(self.client.get_all_channels(), name=msg.to.name)
-            recipient = msg.to.channel
+            if msg.to.room is None:
+                msg.to.room = discord.utils.get(self.client.get_all_channels(), name=msg.to.name)
+            recipient = msg.to.room
 
         for message in [msg.body[i:i + DISCORD_MESSAGE_SIZE_LIMIT] for i in
                         range(0, len(msg.body), DISCORD_MESSAGE_SIZE_LIMIT)]:
-            asyncio.run_coroutine_threadsafe(msg.to.channel.trigger_typing(), loop=self.client.loop)
+            asyncio.run_coroutine_threadsafe(msg.to.room.trigger_typing(), loop=self.client.loop)
 
-            asyncio.run_coroutine_threadsafe(self.client.send_message(destination=recipient, content=message),
-                                             loop=self.client.loop)
+            asyncio.run_coroutine_threadsafe(recipient.send(content=message), loop=self.client.loop)
 
             super().send_message(msg)
 
@@ -297,8 +279,7 @@ class DiscordBackend(ErrBot):
                 em.add_field(name=key, value=value, inline=True)
 
         asyncio.run_coroutine_threadsafe(card.to.trigger_typing(), loop=self.client.loop)
-        asyncio.run_coroutine_threadsafe(self.client.send_message(destination=recipient, embed=em),
-                                         loop=self.client.loop)
+        asyncio.run_coroutine_threadsafe(recipient.send(embed=em), loop=self.client.loop)
 
     def build_reply(self, mess, text=None, private=False, threaded=False):
         log.debug('Threading is %s' % threaded)
@@ -308,8 +289,8 @@ class DiscordBackend(ErrBot):
             response.frm = self.bot_identifier
             response.to = mess.frm
         else:
-            response.frm = DiscordRoomOccupant.from_user_and_room(self.bot_identifier, response.to)
-            response.to = DiscordPerson.from_user(mess.frm) if private else mess.to
+            response.frm = DiscordRoomOccupant(self.bot_identifier, response.to)
+            response.to = DiscordPerson(mess.frm) if private else mess.to
         return response
 
     def serve_once(self):
