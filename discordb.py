@@ -20,7 +20,6 @@ except ImportError:
     )
     sys.exit(1)
 
-
 # Discord message size limit.
 DISCORD_MESSAGE_SIZE_LIMIT = 2000
 
@@ -57,7 +56,7 @@ class DiscordPerson(discord.User, Person):
 
     @property
     def client(self) -> str:
-        return None
+        return self.id
 
     @staticmethod
     def from_user(user: discord.User):
@@ -103,13 +102,13 @@ class DiscordRoom(Room):
         log.error('Not implemented')
         return True
 
-    def __init__(self, name, channel: discord.Channel = None):
+    def __init__(self, name, channel: discord.TextChannel = None):
         self.name = name
         self.channel = channel
 
     @staticmethod
-    def from_channel(channel: discord.Channel):
-        if channel.is_private:
+    def from_channel(channel: discord.TextChannel) -> 'DiscordRoom':
+        if isinstance(channel, discord.abc.PrivateChannel):
             raise ValueError('You cannot build a Room from a private channel')
         return DiscordRoom(channel.name, channel)
 
@@ -130,7 +129,7 @@ class DiscordRoomOccupant(DiscordPerson, RoomOccupant):
         return self._room
 
     @staticmethod
-    def from_user_and_channel(user: discord.User, channel: discord.Channel):
+    def from_user_and_channel(user: discord.User, channel: discord.TextChannel):
         return DiscordRoomOccupant(username=user.name,
                                    id_=user.id,
                                    discriminator=user.discriminator,
@@ -174,15 +173,14 @@ class DiscordBackend(ErrBot):
         self.on_message = self.client.event(self.on_message)
         self.on_member_update = self.client.event(self.on_member_update)
 
-    @asyncio.coroutine
-    def on_ready(self):
+    async def on_ready(self):
         log.debug('Logged in as %s, %s' % (self.client.user.name, self.client.user.id))
         self.bot_identifier = DiscordPerson.from_user(self.client.user)
+
         for channel in self.client.get_all_channels():
             log.debug('Found channel: %s', channel)
 
-    @asyncio.coroutine
-    def on_message(self, msg: discord.Message):
+    async def on_message(self, msg: discord.Message):
         err_msg = Message(msg.content)
         if msg.channel.is_private:
             err_msg.frm = DiscordPerson.from_user(msg.author)
@@ -198,11 +196,12 @@ class DiscordBackend(ErrBot):
                                   [DiscordRoomOccupant.from_user_and_channel(mention, msg.channel)
                                    for mention in msg.mentions])
 
-    @asyncio.coroutine
-    def on_member_update(self, before, after):
+    async def on_member_update(self, before, after):
         if before.status != after.status:
             person = DiscordPerson.from_user(after)
+
             log.debug('Person %s changed status to %s from %s' % (person, after.status, before.status))
+
             if after.status == discord.Status.online:
                 self.callback_presence(Presence(person, ONLINE))
             elif after.status == discord.Status.offline:
@@ -212,9 +211,9 @@ class DiscordBackend(ErrBot):
             elif after.status == discord.Status.dnd:
                 self.callback_presence(Presence(person, DND))
         else:
-            log.debug('Unrocognized member update, ignoring...')
+            log.debug('Unrecognised member update, ignoring...')
 
-    def build_identifier(self, strrep: str):
+    def build_identifier(self, string_representation: str):
         """
         Valid forms of strreps:
 
@@ -224,36 +223,37 @@ class DiscordBackend(ErrBot):
         user                    -> (Ambiguous) Person
         #room                   -> Room
 
-        :param strrep:
+        :param string_representation:
         :return:
         """
-        if not strrep:
+        if not string_representation:
             raise ValueError('Empty strrep')
 
-        if strrep.startswith('#'):
-            return DiscordRoom(strrep[1:])
+        if string_representation.startswith('#'):
+            return DiscordRoom(string_representation[1:])
 
-        if '@' in strrep:
-            user_and_discrim, room = strrep.split('@')
+        if '@' in string_representation:
+            user_an_discriminator, room = string_representation.split('@')
         else:
-            user_and_discrim = strrep
+            user_an_discriminator = string_representation
             room = None
 
-        if '#' in user_and_discrim:
-            user, discriminator = user_and_discrim.split('#')
+        if '#' in user_an_discriminator:
+            user, discriminator = user_an_discriminator.split('#')
         else:
-            user = user_and_discrim
+            user = user_an_discriminator
             discriminator = None
 
         if room:
-            return DiscordRoomOccupant(username=user, discriminator=discriminator, room=DiscordRoom(room))
+            return DiscordRoomOccupant(username=user, discriminator=discriminator,
+                                       room=DiscordRoom(room))
 
         return DiscordPerson(username=user, discriminator=discriminator)
 
     def query_room(self, room):
         return self.build_identifier(room)  # backward compatibility.
 
-    def send_message(self, msg):
+    def send_message(self, msg: Message):
         log.debug('Send:\n%s\nto %s' % (msg.body, msg.to))
 
         if msg.is_direct:
@@ -262,9 +262,11 @@ class DiscordBackend(ErrBot):
             if msg.to.channel is None:
                 msg.to.channel = discord.utils.get(self.client.get_all_channels(), name=msg.to.name)
             recipient = msg.to.channel
+
         for message in [msg.body[i:i + DISCORD_MESSAGE_SIZE_LIMIT] for i in
                         range(0, len(msg.body), DISCORD_MESSAGE_SIZE_LIMIT)]:
-            asyncio.run_coroutine_threadsafe(self.client.send_typing(recipient), loop=self.client.loop)
+            asyncio.run_coroutine_threadsafe(msg.to.channel.trigger_typing(), loop=self.client.loop)
+
             asyncio.run_coroutine_threadsafe(self.client.send_message(destination=recipient, content=message),
                                              loop=self.client.loop)
 
@@ -294,13 +296,14 @@ class DiscordBackend(ErrBot):
             for key, value in card.fields:
                 em.add_field(name=key, value=value, inline=True)
 
-        asyncio.run_coroutine_threadsafe(self.client.send_typing(recipient), loop=self.client.loop)
+        asyncio.run_coroutine_threadsafe(card.to.trigger_typing(), loop=self.client.loop)
         asyncio.run_coroutine_threadsafe(self.client.send_message(destination=recipient, embed=em),
                                          loop=self.client.loop)
 
     def build_reply(self, mess, text=None, private=False, threaded=False):
         log.debug('Threading is %s' % threaded)
         response = self.build_message(text)
+
         if mess.is_direct:
             response.frm = self.bot_identifier
             response.to = mess.frm
@@ -330,11 +333,12 @@ class DiscordBackend(ErrBot):
             self.disconnect_callback()
             return True
 
-    def change_presence(self, status, message):
-        log.debug('Presence changed to %s and game "%s".' % (status, message))
-        self.client.change_presence(status=status, game=message)
+    def change_presence(self, status: str = ONLINE, message: str = ''):
+        log.debug('Presence changed to %s and activity "%s".' % (status, message))
+        activity = discord.Activity(name=message)
+        self.client.change_presence(status=status, activity=activity)
 
-    def prefix_groupchat_reply(self, message, identifier):
+    def prefix_groupchat_reply(self, message, identifier: Person):
         message.body = '@{0} {1}'.format(identifier.nick, message.body)
 
     def rooms(self):
