@@ -1,7 +1,7 @@
 from typing import Any, List
 
 from errbot.backends.base import Person, Message, Room, RoomOccupant, Presence, \
-    ONLINE, OFFLINE, AWAY, DND
+    ONLINE, OFFLINE, AWAY, DND, Identifier
 from errbot.core import ErrBot
 import logging
 import sys
@@ -61,6 +61,12 @@ class DiscordPerson(Person):
     def __eq__(self, other):
         return isinstance(other, DiscordPerson) and other.person == self.person
 
+    async def trigger_typing(self):
+        await self.user.trigger_typing()
+
+    async def send(self, content: str, embed=None):
+        await self.user.send(content=content)
+
 
 class DiscordRoom(Room):
     def invite(self, *args) -> None:
@@ -108,6 +114,12 @@ class DiscordRoom(Room):
             raise ValueError('You cannot build a Room from a private channel')
         return DiscordRoom(channel.name, channel)
 
+    async def trigger_typing(self):
+        await self.channel.trigger_typing()
+
+    async def send(self, content: str = None, embed=None):
+        await self.channel.send(content=content, embed=embed)
+
     def __str__(self):
         return '#' + self.name
 
@@ -122,7 +134,11 @@ class DiscordRoomOccupant(RoomOccupant):
         self.member = member
 
     @property
-    def room(self) -> Any:
+    def person(self) -> discord.Member:
+        return self.member
+
+    @property
+    def room(self) -> discord.TextChannel:
         return self._channel
 
     def __eq__(self, other):
@@ -136,6 +152,9 @@ class DiscordBackend(ErrBot):
     """
     This is the Discord backend for Errbot.
     """
+
+    def build_identifier(self, text_representation: str) -> Identifier:
+        return 1
 
     def __init__(self, config):
         super().__init__(config)
@@ -179,6 +198,9 @@ class DiscordBackend(ErrBot):
                                   [DiscordRoomOccupant(mention, msg.channel)
                                    for mention in msg.mentions])
 
+    def is_from_self(self, msg: Message) -> bool:
+        return msg.frm == self.bot_identifier
+
     async def on_member_update(self, before, after):
         if before.status != after.status:
             person = DiscordPerson(after)
@@ -196,60 +218,18 @@ class DiscordBackend(ErrBot):
         else:
             log.debug('Unrecognised member update, ignoring...')
 
-    def build_identifier(self, string_representation: str):
-        """
-        Valid forms of strreps:
-
-        user#discriminator@room -> RoomOccupant
-        user#discriminator      -> Person
-        user@room               -> (Ambiguous) RoomOccupant
-        user                    -> (Ambiguous) Person
-        #room                   -> Room
-
-        :param string_representation:
-        :return:
-        """
-        if not string_representation:
-            raise ValueError('Empty strrep')
-
-        if string_representation.startswith('#'):
-            return DiscordRoom(string_representation[1:])
-
-        if '@' in string_representation:
-            user_an_discriminator, room = string_representation.split('@')
-        else:
-            user_an_discriminator = string_representation
-            room = None
-
-        if '#' in user_an_discriminator:
-            user, discriminator = user_an_discriminator.split('#')
-        else:
-            user = user_an_discriminator
-            discriminator = None
-
-        if room:
-            pass
-            #return DiscordRoomOccupant(self.client.get_user(1), DiscordRoom(room))
-
-        return DiscordPerson(self.client.get_user(1))
-
     def query_room(self, room):
         return self.build_identifier(room)  # backward compatibility.
 
     def send_message(self, msg: Message):
         log.debug('Send:\n%s\nto %s' % (msg.body, msg.to))
 
-        if msg.is_direct:
-            recipient = msg.to
-        else:
-            if msg.to.room is None:
-                msg.to.room = discord.utils.get(self.client.get_all_channels(), name=msg.to.name)
-            recipient = msg.to.room
+        recipient = msg.to
 
         for message in [msg.body[i:i + DISCORD_MESSAGE_SIZE_LIMIT] for i in
                         range(0, len(msg.body), DISCORD_MESSAGE_SIZE_LIMIT)]:
-            asyncio.run_coroutine_threadsafe(msg.to.room.trigger_typing(), loop=self.client.loop)
 
+            asyncio.run_coroutine_threadsafe(recipient.trigger_typing(), loop=self.client.loop)
             asyncio.run_coroutine_threadsafe(recipient.send(content=message), loop=self.client.loop)
 
             super().send_message(msg)
