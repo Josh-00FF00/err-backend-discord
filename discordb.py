@@ -7,8 +7,7 @@ import logging
 import sys
 import asyncio
 
-# Can't use __name__ because of Yapsy
-log = logging.getLogger('errbot.backends.discord')
+log = logging.getLogger(__name__)
 
 try:
     import discord
@@ -64,8 +63,8 @@ class DiscordPerson(Person):
     async def trigger_typing(self):
         await self.user.trigger_typing()
 
-    async def send(self, content: str, embed=None):
-        await self.user.send(content=content)
+    async def send(self, content: str = None, embed=None):
+        await self.user.send(content=content, embed=embed)
 
 
 class DiscordRoom(Room):
@@ -108,12 +107,6 @@ class DiscordRoom(Room):
         self.name = name
         self.channel = channel
 
-    @staticmethod
-    def from_channel(channel: discord.TextChannel) -> 'DiscordRoom':
-        if isinstance(channel, discord.abc.PrivateChannel):
-            raise ValueError('You cannot build a Room from a private channel')
-        return DiscordRoom(channel.name, channel)
-
     async def trigger_typing(self):
         await self.channel.trigger_typing()
 
@@ -154,7 +147,7 @@ class DiscordBackend(ErrBot):
     """
 
     def build_identifier(self, text_representation: str) -> Identifier:
-        return 1
+        raise NotImplementedError()
 
     def __init__(self, config):
         super().__init__(config)
@@ -188,7 +181,7 @@ class DiscordBackend(ErrBot):
             err_msg.frm = DiscordPerson(msg.author)
             err_msg.to = self.bot_identifier
         else:
-            err_msg.to = DiscordRoom.from_channel(msg.channel)
+            err_msg.to = DiscordRoom(msg.channel)
             err_msg.frm = DiscordRoomOccupant(msg.author, msg.channel)
 
         log.debug('Received message %s' % msg)
