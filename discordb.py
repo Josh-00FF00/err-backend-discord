@@ -23,7 +23,7 @@ except ImportError:
 # Discord message size limit.
 DISCORD_MESSAGE_SIZE_LIMIT = 2000
 
-COLORS = {
+COLOURS = {
     'red': 0xFF0000,
     'green': 0x008000,
     'yellow': 0xFFA500,
@@ -348,7 +348,7 @@ class DiscordBackend(ErrBot):
         recipient = discord.utils.get(self.client.get_all_channels(), name=card.to.name)
 
         if card.color:
-            color = COLORS[card.color] if card.color in COLORS else int(card.color.replace('#', '0x'), 16)
+            color = COLOURS[card.color] if card.color in COLOURS else int(card.color.replace('#', '0x'), 16)
         else:
             color = None
 
