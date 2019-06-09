@@ -326,7 +326,7 @@ class DiscordBackend(ErrBot):
         return self.build_identifier(room)  # backward compatibility.
 
     def send_message(self, msg: Message):
-        log.debug('Send:\n%s\nto %s' % (msg.body, msg.to))
+        log.debug('From:\n%s\nto %s' % (msg.frm, msg.to))
 
         recipient = msg.to
 
@@ -342,10 +342,11 @@ class DiscordBackend(ErrBot):
             super().send_message(msg)
 
     def send_card(self, card):
-        if isinstance(card.to, RoomOccupant):
-            card.to = card.to.room
+        recipient = card.to
 
-        recipient = discord.utils.get(self.client.get_all_channels(), name=card.to.name)
+        if not isinstance(recipient, DiscordSender):
+            raise RuntimeError("{} doesn't support sending messages. Expected {} but got {}"
+                               .format(recipient, DiscordSender, type(recipient)))
 
         if card.color:
             color = COLOURS[card.color] if card.color in COLOURS else int(card.color.replace('#', '0x'), 16)
@@ -365,11 +366,10 @@ class DiscordBackend(ErrBot):
             for key, value in card.fields:
                 em.add_field(name=key, value=value, inline=True)
 
-        asyncio.run_coroutine_threadsafe(card.to.trigger_typing(), loop=self.client.loop)
+        asyncio.run_coroutine_threadsafe(recipient.trigger_typing(), loop=self.client.loop)
         asyncio.run_coroutine_threadsafe(recipient.send(embed=em), loop=self.client.loop)
 
     def build_reply(self, mess, text=None, private=False, threaded=False):
-        log.debug('Threading is %s' % threaded)
         response = self.build_message(text)
 
         if mess.is_direct:
@@ -385,7 +385,7 @@ class DiscordBackend(ErrBot):
 
     def serve_once(self):
         self.connect_callback()
-        # Hehe client.run cannot be used as we need more control.
+        # client.run cannot be used as we need more control.
         try:
             self.client.loop.run_until_complete(self.client.start(self.token))
         except KeyboardInterrupt:
@@ -413,7 +413,7 @@ class DiscordBackend(ErrBot):
         message.body = '@{0} {1}'.format(identifier.nick, message.body)
 
     def rooms(self):
-        return [DiscordRoom(channel.name) for channel in self.client.get_all_channels()]
+        return [DiscordRoom(self.client, channel.id) for channel in self.client.get_all_channels()]
 
     @property
     def mode(self):
