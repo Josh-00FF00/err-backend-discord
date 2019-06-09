@@ -82,8 +82,19 @@ class DiscordPerson(Person):
 
 class DiscordRoom(Room):
 
-    def __init__(self, dc: discord.Client, channel_id: str):
-        self._channel_id = channel_id
+    def __init__(self, dc: discord.Client, channel_id: str = None, channel_name: str = None):
+        if channel_id is not None and channel_name is not None:
+            raise ValueError("channel_id and channel_name are mutually exclusive")
+
+        if channel_name is not None:
+            # Channel doesn't exist
+            self._channel_name = channel_name
+            self._channel_id = None
+        else:
+            # Channel exists
+            self._channel_id = channel_id
+            self._channel_name = dc.get_channel(channel_id).name
+
         self._dc = dc
 
     def invite(self, *args) -> None:
@@ -118,15 +129,17 @@ class DiscordRoom(Room):
 
     @property
     def exists(self) -> bool:
-        log.error('Not implemented')
-        return True
+        return self._channel_id is not None
 
     @property
-    def guild(self) -> str:
+    def guild(self):
         """
-        Gets the guild_id this channel belongs to
-        :return: Guild id
+        Gets the guild_id this channel belongs to. None if it doesn't exist
+        :return: Guild id or None
         """
+        if not self.exists:
+            return None
+
         channel = self._dc.get_channel(self._channel_id)
         return channel.guild.id
 
@@ -135,23 +148,30 @@ class DiscordRoom(Room):
         """
         Gets the channels' name
 
-        :return: Channels' name
+        :return: channels' name
         """
-        return self._dc.get_channel(self._channel_id).name
+        if self._channel_id is None:
+            return self._channel_name
+        else:
+            return self._dc.get_channel(self._channel_id).name
 
     @property
-    def id(self) -> str:
+    def id(self):
+        """
+        Can return none if not created
+        :return: Channel ID or None
+        """
         return self._channel_id
 
     def __str__(self):
-        channel = self._dc.get_channel(self._channel_id)
-        return '#' + channel.name
+        return '#' + self.name
 
     def __eq__(self, other: 'DiscordRoom'):
         if not isinstance(other, DiscordRoom):
             return False
 
-        return other.id == self.id
+        return other.id is not None and self.id is not None \
+            and other.id == self.id
 
 
 class DiscordRoomOccupant(DiscordPerson, RoomOccupant):
@@ -168,8 +188,8 @@ class DiscordRoomOccupant(DiscordPerson, RoomOccupant):
 
     def __eq__(self, other):
         return isinstance(other, DiscordRoomOccupant) \
-            and other.id == self.id \
-            and other.room.id == self.room.id
+               and other.id == self.id \
+               and other.room.id == self.room.id
 
     def __str__(self):
         return super().__str__() + '@' + self._channel.name
