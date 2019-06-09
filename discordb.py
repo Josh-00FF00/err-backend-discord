@@ -51,7 +51,7 @@ class DiscordPerson(Person):
 
     @property
     def fullname(self) -> str:
-        return self.user.name
+        return self.user.name + "#" + self.user.discriminator
 
     @property
     def client(self) -> str:
@@ -65,6 +65,9 @@ class DiscordPerson(Person):
 
     async def send(self, content: str = None, embed=None):
         await self.user.send(content=content, embed=embed)
+
+    def __str__(self):
+        return self.fullname
 
 
 class DiscordRoom(Room):
