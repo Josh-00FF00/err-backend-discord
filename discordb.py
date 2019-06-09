@@ -34,43 +34,58 @@ COLORS = {
 
 class DiscordPerson(Person):
 
-    def __init__(self, user: discord.User):
-        self.user = user
+    def __init__(self, dc: discord.Client, user_id: str):
+        self._user_id = user_id
+        self._dc = dc
 
     @property
     def person(self) -> str:
-        return self.user.discriminator
+        return self._user_id
 
     @property
-    def aclattr(self) -> str:
-        return self.user.id
+    def id(self) -> str:
+        return self._user_id
 
     @property
-    def nick(self) -> str:
-        return self.user.name
+    def username(self) -> str:
+        """Convert a Discord user ID to their user name"""
+        user = self._dc.get_user(self._user_id)
+
+        if user is None:
+            log.error('Cannot find user with ID %s', self._user_id)
+            return f'<{self._user_id}>'
+
+        return user.name
+
+    nick = username
+
+    @property
+    def client(self) -> None:
+        return None
 
     @property
     def fullname(self) -> str:
-        return self.user.name + "#" + self.user.discriminator
+        user = self._dc.get_user(self._user_id)
+
+        return f"{user.nick}#{user.discriminator}"
 
     @property
-    def client(self) -> str:
-        return self.user.id
+    def aclattr(self) -> str:
+        return self._user_id
 
     def __eq__(self, other):
         return isinstance(other, DiscordPerson) and other.aclattr == self.aclattr
-
-    async def trigger_typing(self):
-        await self.user.trigger_typing()
-
-    async def send(self, content: str = None, embed=None):
-        await self.user.send(content=content, embed=embed)
 
     def __str__(self):
         return self.fullname
 
 
 class DiscordRoom(Room):
+
+    def __init__(self, dc: discord.Client, channel_id: str):
+        self._channel_id = channel_id
+        self._dc = dc
+
     def invite(self, *args) -> None:
         log.error('Not implemented')
 
@@ -106,34 +121,55 @@ class DiscordRoom(Room):
         log.error('Not implemented')
         return True
 
-    def __init__(self, channel: discord.TextChannel = None):
-        self.channel = channel
+    @property
+    def guild(self) -> str:
+        """
+        Gets the guild_id this channel belongs to
+        :return: Guild id
+        """
+        channel = self._dc.get_channel(self._channel_id)
+        return channel.guild.id
 
-    async def trigger_typing(self):
-        await self.channel.trigger_typing()
+    @property
+    def name(self) -> str:
+        """
+        Gets the channels' name
 
-    async def send(self, content: str = None, embed=None):
-        await self.channel.send(content=content, embed=embed)
+        :return: Channels' name
+        """
+        return self._dc.get_channel(self._channel_id).name
+
+    @property
+    def id(self) -> str:
+        return self._channel_id
 
     def __str__(self):
-        return '#' + self.channel.name
+        channel = self._dc.get_channel(self._channel_id)
+        return '#' + channel.name
 
-    def __eq__(self, other):
-        return other.name == self.channel.name
+    def __eq__(self, other: 'DiscordRoom'):
+        if not isinstance(other, DiscordRoom):
+            return False
+
+        return other.id == self.id
 
 
 class DiscordRoomOccupant(DiscordPerson, RoomOccupant):
 
-    def __init__(self, member: discord.User, channel: discord.TextChannel):
-        super().__init__(member)
-        self._channel = channel
+    def __init__(self, dc: discord.Client, user_id: str, channel_id: str):
+        super().__init__(dc, user_id)
+
+        self._channel = DiscordRoom(dc, channel_id)
+        self._dc = dc
 
     @property
-    def room(self) -> discord.TextChannel:
+    def room(self) -> DiscordRoom:
         return self._channel
 
     def __eq__(self, other):
-        return isinstance(other, DiscordRoomOccupant) and str(other) == str(self)
+        return isinstance(other, DiscordRoomOccupant) \
+            and other.id == self.id \
+            and other.room.id == self.room.id
 
     def __str__(self):
         return super().__str__() + '@' + self._channel.name
@@ -219,7 +255,6 @@ class DiscordBackend(ErrBot):
 
         for message in [msg.body[i:i + DISCORD_MESSAGE_SIZE_LIMIT] for i in
                         range(0, len(msg.body), DISCORD_MESSAGE_SIZE_LIMIT)]:
-
             asyncio.run_coroutine_threadsafe(recipient.trigger_typing(), loop=self.client.loop)
             asyncio.run_coroutine_threadsafe(recipient.send(content=message), loop=self.client.loop)
 
