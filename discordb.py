@@ -58,7 +58,7 @@ class DiscordPerson(Person):
         return self.user.id
 
     def __eq__(self, other):
-        return isinstance(other, DiscordPerson) and other.person == self.person
+        return isinstance(other, DiscordPerson) and other.aclattr == self.aclattr
 
     async def trigger_typing(self):
         await self.user.trigger_typing()
@@ -103,8 +103,7 @@ class DiscordRoom(Room):
         log.error('Not implemented')
         return True
 
-    def __init__(self, name, channel: discord.TextChannel = None):
-        self.name = name
+    def __init__(self, channel: discord.TextChannel = None):
         self.channel = channel
 
     async def trigger_typing(self):
@@ -114,21 +113,17 @@ class DiscordRoom(Room):
         await self.channel.send(content=content, embed=embed)
 
     def __str__(self):
-        return '#' + self.name
+        return '#' + self.channel.name
 
     def __eq__(self, other):
-        return other.name == self.name
+        return other.name == self.channel.name
 
 
-class DiscordRoomOccupant(RoomOccupant):
+class DiscordRoomOccupant(DiscordPerson, RoomOccupant):
 
-    def __init__(self, member: discord.Member, channel: discord.TextChannel):
+    def __init__(self, member: discord.User, channel: discord.TextChannel):
+        super().__init__(member)
         self._channel = channel
-        self.member = member
-
-    @property
-    def person(self) -> discord.Member:
-        return self.member
 
     @property
     def room(self) -> discord.TextChannel:
