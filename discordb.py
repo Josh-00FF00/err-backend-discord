@@ -1,11 +1,12 @@
-from typing import Any, List
+import asyncio
+import logging
+import sys
+from abc import ABC, abstractmethod
+from typing import List, Optional, Union
 
 from errbot.backends.base import Person, Message, Room, RoomOccupant, Presence, \
     ONLINE, OFFLINE, AWAY, DND, Identifier
 from errbot.core import ErrBot
-import logging
-import sys
-import asyncio
 
 log = logging.getLogger(__name__)
 
@@ -29,14 +30,28 @@ COLORS = {
     'blue': 0x0000FF,
     'white': 0xFFFFFF,
     'cyan': 0x00FFFF
-}  # Discord doesn't know its colors
+}  # Discord doesn't know its colours
 
 
-class DiscordPerson(Person):
+class DiscordSender(ABC):
+    @abstractmethod
+    async def send(self, content: str = None, embed: discord.Embed = None):
+        raise NotImplementedError
+
+    @abstractmethod
+    async def trigger_typing(self):
+        raise NotImplementedError
+
+
+class DiscordPerson(Person, DiscordSender, discord.abc.Snowflake):
 
     def __init__(self, dc: discord.Client, user_id: str):
         self._user_id = user_id
         self._dc = dc
+
+    @property
+    def created_at(self):
+        return discord.utils.snowflake_time(self.id)
 
     @property
     def person(self) -> str:
@@ -47,9 +62,13 @@ class DiscordPerson(Person):
         return self._user_id
 
     @property
+    def discord_user(self) -> discord.User:
+        return self._dc.get_user(self._user_id)
+
+    @property
     def username(self) -> str:
         """Convert a Discord user ID to their user name"""
-        user = self._dc.get_user(self._user_id)
+        user = self.discord_user
 
         if user is None:
             log.error('Cannot find user with ID %s', self._user_id)
@@ -65,13 +84,17 @@ class DiscordPerson(Person):
 
     @property
     def fullname(self) -> str:
-        user = self._dc.get_user(self._user_id)
-
-        return f"{user.nick}#{user.discriminator}"
+        return f"{self.discord_user.name}#{self.discord_user.discriminator}"
 
     @property
     def aclattr(self) -> str:
         return self._user_id
+
+    async def send(self, content: str = None, embed: discord.Embed = None):
+        await self.discord_user.send(content=content, embed=embed)
+
+    async def trigger_typing(self):
+        await self.discord_user.trigger_typing()
 
     def __eq__(self, other):
         return isinstance(other, DiscordPerson) and other.aclattr == self.aclattr
@@ -80,7 +103,7 @@ class DiscordPerson(Person):
         return self.fullname
 
 
-class DiscordRoom(Room):
+class DiscordRoom(Room, DiscordSender, discord.abc.Snowflake):
 
     def __init__(self, dc: discord.Client, channel_id: str = None, channel_name: str = None):
         if channel_id is not None and channel_name is not None:
@@ -96,6 +119,10 @@ class DiscordRoom(Room):
             self._channel_name = dc.get_channel(channel_id).name
 
         self._dc = dc
+
+    @property
+    def created_at(self):
+        return discord.utils.snowflake_time(self.id)
 
     def invite(self, *args) -> None:
         log.error('Not implemented')
@@ -163,6 +190,28 @@ class DiscordRoom(Room):
         """
         return self._channel_id
 
+    @property
+    def discord_channel(self) -> Optional[Union[discord.abc.GuildChannel, discord.abc.PrivateChannel]]:
+        return self._dc.get_channel(self._channel_id)
+
+    async def send(self, content: str = None, embed: discord.Embed = None):
+        if not self.exists:
+            raise RuntimeError("Can't send a message on a non-existent channel")
+        if not isinstance(self.discord_channel, discord.abc.Messageable):
+            raise RuntimeError("Channel {}[id:{}] doesn't support sending text messages"
+                               .format(self.name, self._channel_id))
+
+        await self.discord_channel.send(content=content, embed=embed)
+
+    async def trigger_typing(self):
+        if not self.exists:
+            raise RuntimeError("Can't start typing on a non-existent channel")
+        if not isinstance(self.discord_channel, discord.abc.Messageable):
+            raise RuntimeError("Channel {}[id:{}] doesn't support typing"
+                               .format(self.name, self._channel_id))
+
+        await self.discord_channel.trigger_typing()
+
     def __str__(self):
         return '#' + self.name
 
@@ -174,7 +223,7 @@ class DiscordRoom(Room):
             and other.id == self.id
 
 
-class DiscordRoomOccupant(DiscordPerson, RoomOccupant):
+class DiscordRoomOccupant(DiscordPerson, RoomOccupant, DiscordSender, discord.abc.Snowflake):
 
     def __init__(self, dc: discord.Client, user_id: str, channel_id: str):
         super().__init__(dc, user_id)
@@ -185,6 +234,12 @@ class DiscordRoomOccupant(DiscordPerson, RoomOccupant):
     @property
     def room(self) -> DiscordRoom:
         return self._channel
+
+    async def send(self, content: str = None, embed: discord.Embed = None):
+        await self.room.send(content=content, embed=embed)
+
+    async def trigger_typing(self):
+        await self.room.trigger_typing()
 
     def __eq__(self, other):
         return isinstance(other, DiscordRoomOccupant) \
@@ -223,7 +278,7 @@ class DiscordBackend(ErrBot):
     async def on_ready(self):
         log.debug('Logged in as %s, %s' % (self.client.user.name, self.client.user.id))
         if self.bot_identifier is None:
-            self.bot_identifier = DiscordPerson(self.client.user)
+            self.bot_identifier = DiscordPerson(self.client, self.client.user.id)
 
         for channel in self.client.get_all_channels():
             log.debug('Found channel: %s', channel)
@@ -232,17 +287,19 @@ class DiscordBackend(ErrBot):
         err_msg = Message(msg.content)
 
         if isinstance(msg.channel, discord.abc.PrivateChannel):
-            err_msg.frm = DiscordPerson(msg.author)
+            err_msg.frm = DiscordPerson(self.client, msg.author.id)
             err_msg.to = self.bot_identifier
         else:
-            err_msg.to = DiscordRoom(msg.channel)
-            err_msg.frm = DiscordRoomOccupant(msg.author, msg.channel)
+            err_msg.to = DiscordRoom(self.client, msg.channel.id)
+            err_msg.frm = DiscordRoomOccupant(self.client, msg.author.id, msg.channel.id)
 
         log.debug('Received message %s' % msg)
+
         self.callback_message(err_msg)
+
         if msg.mentions:
             self.callback_mention(err_msg,
-                                  [DiscordRoomOccupant(mention, msg.channel)
+                                  [DiscordRoomOccupant(self.client, mention.id, msg.channel.id)
                                    for mention in msg.mentions])
 
     def is_from_self(self, msg: Message) -> bool:
@@ -250,7 +307,7 @@ class DiscordBackend(ErrBot):
 
     async def on_member_update(self, before, after):
         if before.status != after.status:
-            person = DiscordPerson(after)
+            person = DiscordPerson(self.client, after)
 
             log.debug('Person %s changed status to %s from %s' % (person, after.status, before.status))
 
@@ -272,6 +329,10 @@ class DiscordBackend(ErrBot):
         log.debug('Send:\n%s\nto %s' % (msg.body, msg.to))
 
         recipient = msg.to
+
+        if not isinstance(recipient, DiscordSender):
+            raise RuntimeError("{} doesn't support sending messages. Expected {} but got {}"
+                               .format(recipient, DiscordSender, type(recipient)))
 
         for message in [msg.body[i:i + DISCORD_MESSAGE_SIZE_LIMIT] for i in
                         range(0, len(msg.body), DISCORD_MESSAGE_SIZE_LIMIT)]:
@@ -315,8 +376,11 @@ class DiscordBackend(ErrBot):
             response.frm = self.bot_identifier
             response.to = mess.frm
         else:
-            response.frm = DiscordRoomOccupant(self.bot_identifier, response.to)
-            response.to = DiscordPerson(mess.frm) if private else mess.to
+            if not isinstance(mess.frm, DiscordRoomOccupant):
+                raise RuntimeError("Non-Direct messages must come from a room occupant")
+
+            response.frm = DiscordRoomOccupant(self.client, self.bot_identifier.id, mess.frm.room.id)
+            response.to = DiscordPerson(self.client, mess.frm.id) if private else mess.to
         return response
 
     def serve_once(self):
