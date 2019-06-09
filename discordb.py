@@ -308,7 +308,10 @@ class DiscordBackend(ErrBot):
                                    for mention in msg.mentions])
 
     def is_from_self(self, msg: Message) -> bool:
-        return msg.frm == self.bot_identifier
+        if not isinstance(msg.frm, discord.abc.Snowflake):
+            return False
+
+        return msg.frm.id == self.bot_identifier.id
 
     async def on_member_update(self, before, after):
         if before.status != after.status:
