@@ -83,8 +83,13 @@ class DiscordPerson(Person, DiscordSender, discord.abc.Snowflake):
         return None
 
     @property
-    def fullname(self) -> str:
-        return f"{self.discord_user.name}#{self.discord_user.discriminator}"
+    def fullname(self) -> Optional[str]:
+        usr = self.discord_user
+
+        if usr is None:
+            return None
+
+        return f"{usr.name}#{usr.discriminator}"
 
     @property
     def aclattr(self) -> str:
@@ -307,7 +312,7 @@ class DiscordBackend(ErrBot):
 
     async def on_member_update(self, before, after):
         if before.status != after.status:
-            person = DiscordPerson(self.client, after)
+            person = DiscordPerson(self.client, after.id)
 
             log.debug('Person %s changed status to %s from %s' % (person, after.status, before.status))
 
@@ -354,7 +359,7 @@ class DiscordBackend(ErrBot):
             color = None
 
         # Create Embed object
-        em = discord.Embed(title=card.title, description=card.summary, color=color)
+        em = discord.Embed(title=card.title, description=card.body, color=color)
 
         if card.image:
             em.set_image(url=card.image)
