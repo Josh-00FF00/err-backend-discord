@@ -432,6 +432,7 @@ class DiscordBackend(ErrBot):
             self.client.loop.run_until_complete(self.client.logout())
             pending = asyncio.Task.all_tasks()
             gathered = asyncio.gather(*pending)
+            # noinspection PyBroadException
             try:
                 gathered.cancel()
                 self.client.loop.run_until_complete(gathered)
