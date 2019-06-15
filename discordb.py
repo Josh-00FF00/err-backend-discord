@@ -41,11 +41,14 @@ class DiscordSender(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def trigger_typing(self):
+    def get_discord_messenger(self):
         raise NotImplementedError
 
 
 class DiscordPerson(Person, DiscordSender, discord.abc.Snowflake):
+
+    def get_discord_messenger(self) -> discord.abc.Messageable:
+        return self.discord_user
 
     @classmethod
     def username_and_discriminator_to_userid(cls, dc: discord.client, username: str, discriminator: str) -> str:
@@ -104,9 +107,6 @@ class DiscordPerson(Person, DiscordSender, discord.abc.Snowflake):
     async def send(self, content: str = None, embed: discord.Embed = None):
         await self.discord_user.send(content=content, embed=embed)
 
-    async def trigger_typing(self):
-        await self.discord_user.trigger_typing()
-
     def __eq__(self, other):
         return isinstance(other, DiscordPerson) and other.aclattr == self.aclattr
 
@@ -121,6 +121,9 @@ class DiscordRoom(Room, DiscordSender, discord.abc.Snowflake):
     1. They exist and we have a channel_id of that room
     2. They don't currently exist and we have a channel name and guild
     """
+
+    def get_discord_messenger(self):
+        return self.discord_channel
 
     @classmethod
     def channel_name_to_id(cls, dc: discord.client, name: str, guild: str):
@@ -246,15 +249,6 @@ class DiscordRoom(Room, DiscordSender, discord.abc.Snowflake):
 
         await self.discord_channel.send(content=content, embed=embed)
 
-    async def trigger_typing(self):
-        if not self.exists:
-            raise RuntimeError("Can't start typing on a non-existent channel")
-        if not isinstance(self.discord_channel, discord.abc.Messageable):
-            raise RuntimeError("Channel {}[id:{}] doesn't support typing"
-                               .format(self.name, self._channel_id))
-
-        await self.discord_channel.trigger_typing()
-
     def __str__(self):
         return '#' + self.name
 
@@ -280,9 +274,6 @@ class DiscordRoomOccupant(DiscordPerson, RoomOccupant, DiscordSender, discord.ab
 
     async def send(self, content: str = None, embed: discord.Embed = None):
         await self.room.send(content=content, embed=embed)
-
-    async def trigger_typing(self):
-        await self.room.trigger_typing()
 
     def __eq__(self, other):
         return isinstance(other, DiscordRoomOccupant) \
@@ -333,7 +324,15 @@ class DiscordBackend(ErrBot):
             err_msg.to = DiscordRoom.from_id(self.client, msg.channel.id)
             err_msg.frm = DiscordRoomOccupant(self.client, msg.author.id, msg.channel.id)
 
-        self.callback_message(err_msg)
+        if self.process_message(err_msg):
+            # Message contains a command
+            recipient = err_msg.frm
+
+            if not isinstance(recipient, DiscordSender):
+                raise ValueError("Message object from is not a DiscordSender")
+
+            async with recipient.get_discord_messenger().typing():
+                self._dispatch_to_plugins('callback_message', msg)
 
         if msg.mentions:
             self.callback_mention(err_msg,
@@ -379,7 +378,6 @@ class DiscordBackend(ErrBot):
 
         for message in [msg.body[i:i + DISCORD_MESSAGE_SIZE_LIMIT] for i in
                         range(0, len(msg.body), DISCORD_MESSAGE_SIZE_LIMIT)]:
-            asyncio.run_coroutine_threadsafe(recipient.trigger_typing(), loop=self.client.loop)
             asyncio.run_coroutine_threadsafe(recipient.send(content=message), loop=self.client.loop)
 
             super().send_message(msg)
@@ -409,7 +407,6 @@ class DiscordBackend(ErrBot):
             for key, value in card.fields:
                 em.add_field(name=key, value=value, inline=True)
 
-        asyncio.run_coroutine_threadsafe(recipient.trigger_typing(), loop=self.client.loop)
         asyncio.run_coroutine_threadsafe(recipient.send(embed=em), loop=self.client.loop)
 
     def build_reply(self, mess, text=None, private=False, threaded=False):
