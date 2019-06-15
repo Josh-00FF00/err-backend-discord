@@ -48,11 +48,10 @@ class DiscordSender(ABC):
 class DiscordPerson(Person, DiscordSender, discord.abc.Snowflake):
 
     @classmethod
-    def username_and_discriminator_to_userid(cls, dc: discord.client, username: str, discriminator: str):
-        return find(lambda m: m.name == username and m.discriminator == discriminator,
-                    dc.get_all_channels().guild.members)
+    def username_and_discriminator_to_userid(cls, dc: discord.client, username: str, discriminator: str) -> str:
+        return find(lambda m: m.name == username and m.discriminator == discriminator, dc.get_all_members())
 
-    def __init__(self, dc: discord.Client, user_id: str):
+    def __init__(self, dc: discord.client, user_id: str):
         self._user_id = user_id
         self._dc = dc
 
@@ -116,32 +115,53 @@ class DiscordPerson(Person, DiscordSender, discord.abc.Snowflake):
 
 
 class DiscordRoom(Room, DiscordSender, discord.abc.Snowflake):
+    """
+    DiscordRoom objects can be in two states:
+
+    1. They exist and we have a channel_id of that room
+    2. They don't currently exist and we have a channel name and guild
+    """
 
     @classmethod
-    def channel_name_to_id(cls, dc: discord.client, name: str):
-        matching = [channel for channel in dc.get_all_channels() if name == channel.name]
+    def channel_name_to_id(cls, dc: discord.client, name: str, guild: str):
+        """
+        Channel names are non-unique across Discord. Hence we require a guild name to uniquely identify a room id
+
+        :param dc: Discord client object
+        :param name: room name
+        :param guild: Guild name
+        :return: ID of the room
+        """
+        matching = [channel for channel in dc.get_all_channels() if name == channel.name and channel.guild == guild]
 
         if len(matching) == 0:
             return None
 
         if len(matching) > 1:
-            log.warning("Multiple matching channels for channel name {}".format(name))
+            log.warning("Multiple matching channels for channel name {} in guild {}".format(name, guild))
 
         return matching[0].id
 
-    def __init__(self, dc: discord.Client, channel_id: str = None, channel_name: str = None):
-        if channel_id is not None and channel_name is not None:
-            raise ValueError("channel_id and channel_name are mutually exclusive")
+    @classmethod
+    def from_id(cls, dc: discord.client, channel_id):
+        channel = dc.get_channel(channel_id)
+        if channel is None:
+            raise ValueError("Channel id:{} doesn't exist!".format(channel_id))
 
+        return cls(dc, channel.name, channel.guild)
+
+    def __init__(self, dc: discord.Client, channel_name: str, guild: str):
+        """
+        Allows to specify an existing room (via name + guild or via id) or allows the creation of a future room by
+        specifying a name and guild to create the channel in.
+
+        :param dc:
+        :param channel_name:
+        :param guild:
+        """
         self._dc = dc
-
-        if channel_name is not None:
-            self._channel_id = self.channel_name_to_id(dc, channel_name)  # Can be None if channel doesn't exist
-        else:
-            # Channel exists
-            self._channel_id = channel_id
-
-        self._channel_name = dc.get_channel(channel_id).name
+        self._channel_id = self.channel_name_to_id(dc, channel_name, guild)  # Can be None if channel doesn't exist
+        self._channel_name = channel_name
 
     @property
     def created_at(self):
@@ -179,7 +199,7 @@ class DiscordRoom(Room, DiscordSender, discord.abc.Snowflake):
 
     @property
     def exists(self) -> bool:
-        return self._channel_id is not None
+        return self._channel_id is not None and self._dc.get_channel(self._channel_id) is not None
 
     @property
     def guild(self):
@@ -251,7 +271,7 @@ class DiscordRoomOccupant(DiscordPerson, RoomOccupant, DiscordSender, discord.ab
     def __init__(self, dc: discord.Client, user_id: str, channel_id: str):
         super().__init__(dc, user_id)
 
-        self._channel = DiscordRoom(dc, channel_id)
+        self._channel = DiscordRoom.from_id(dc, channel_id)
         self._dc = dc
 
     @property
@@ -296,7 +316,7 @@ class DiscordBackend(ErrBot):
         self.on_member_update = self.client.event(self.on_member_update)
 
     async def on_ready(self):
-        log.debug('Logged in as %s, %s' % (self.client.user.name, self.client.user.id))
+        log.debug('Logged in as {}, {}'.format(self.client.user.name, self.client.user.id))
         if self.bot_identifier is None:
             self.bot_identifier = DiscordPerson(self.client, self.client.user.id)
 
@@ -310,10 +330,8 @@ class DiscordBackend(ErrBot):
             err_msg.frm = DiscordPerson(self.client, msg.author.id)
             err_msg.to = self.bot_identifier
         else:
-            err_msg.to = DiscordRoom(self.client, msg.channel.id)
+            err_msg.to = DiscordRoom.from_id(self.client, msg.channel.id)
             err_msg.frm = DiscordRoomOccupant(self.client, msg.author.id, msg.channel.id)
-
-        log.debug('Received message %s' % msg)
 
         self.callback_message(err_msg)
 
@@ -438,7 +456,7 @@ class DiscordBackend(ErrBot):
         message.body = '@{0} {1}'.format(identifier.nick, message.body)
 
     def rooms(self):
-        return [DiscordRoom(self.client, channel.id) for channel in self.client.get_all_channels()]
+        return [DiscordRoom.from_id(self.client, channel.id) for channel in self.client.get_all_channels()]
 
     @property
     def mode(self):
@@ -446,37 +464,24 @@ class DiscordBackend(ErrBot):
 
     def build_identifier(self, string_representation: str):
         """
+
+        This needs a major rethink/rework since discord bots can be in different Guilds so room name clashes are
+        certainly possible. For now we are only uniquely identifying users
+
         Valid forms of strreps:
-        user#discriminator@room -> RoomOccupant
         user#discriminator      -> Person
-        user@room               -> (Ambiguous) RoomOccupant
-        user                    -> (Ambiguous) Person
-        #room                   -> Room
+
         :param string_representation:
-        :return:
+        :return: Identifier
         """
         if not string_representation:
             raise ValueError('Empty strrep')
 
-        if string_representation.startswith('#'):
-            return DiscordRoom(self.client, channel_name=string_representation[1:])
-
-        if '@' in string_representation:
-            user_and_discrim, room = string_representation.split('@')
+        if '#' in string_representation:
+            user, discriminator = string_representation.split('#')
         else:
-            user_and_discrim = string_representation
-            room = None
-
-        if '#' in user_and_discrim:
-            user, discriminator = user_and_discrim.split('#')
-        else:
-            user = user_and_discrim
-            discriminator = None
+            raise ValueError("No Discriminator")
 
         user_id = DiscordPerson.username_and_discriminator_to_userid(self.client, user, discriminator)
-        channel_id = DiscordRoom.channel_name_to_id(self.client, room)
-
-        if room:
-            return DiscordRoomOccupant(self.client, user_id=user_id, channel_id=channel_id)
 
         return DiscordPerson(self.client, user_id=user_id)
