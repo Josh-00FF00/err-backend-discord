@@ -41,7 +41,7 @@ class DiscordSender(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_discord_messenger(self):
+    def get_discord_messenger(self) -> discord.abc.Messageable:
         raise NotImplementedError
 
 
@@ -332,7 +332,7 @@ class DiscordBackend(ErrBot):
                 raise ValueError("Message object from is not a DiscordSender")
 
             async with recipient.get_discord_messenger().typing():
-                self._dispatch_to_plugins('callback_message', msg)
+                self._dispatch_to_plugins('callback_message', err_msg)
 
         if msg.mentions:
             self.callback_mention(err_msg,
