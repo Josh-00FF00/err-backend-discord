@@ -6,7 +6,7 @@ from typing import List, Optional, Union
 
 from discord.utils import find
 from errbot.backends.base import Person, Message, Room, RoomOccupant, Presence, \
-    ONLINE, OFFLINE, AWAY, DND
+    ONLINE, OFFLINE, AWAY, DND, RoomError
 
 from errbot.core import ErrBot
 
@@ -64,7 +64,7 @@ class DiscordPerson(Person, DiscordSender, discord.abc.Snowflake):
 
     @property
     def person(self) -> str:
-        return self._user_id
+        return str(self)
 
     @property
     def id(self) -> str:
@@ -126,22 +126,23 @@ class DiscordRoom(Room, DiscordSender, discord.abc.Snowflake):
         return self.discord_channel
 
     @classmethod
-    def channel_name_to_id(cls, dc: discord.client, name: str, guild: str):
+    def channel_name_to_id(cls, dc: discord.client, name: str, guild_id: str):
         """
         Channel names are non-unique across Discord. Hence we require a guild name to uniquely identify a room id
 
         :param dc: Discord client object
         :param name: room name
-        :param guild: Guild name
+        :param guild_id: Guild name
         :return: ID of the room
         """
-        matching = [channel for channel in dc.get_all_channels() if name == channel.name and channel.guild == guild]
+        matching = [channel for channel in dc.get_all_channels() if name == channel.name
+                    and channel.guild.id == guild_id]
 
         if len(matching) == 0:
             return None
 
         if len(matching) > 1:
-            log.warning("Multiple matching channels for channel name {} in guild {}".format(name, guild))
+            log.warning("Multiple matching channels for channel name {} in guild id {}".format(name, guild_id))
 
         return matching[0].id
 
@@ -151,20 +152,25 @@ class DiscordRoom(Room, DiscordSender, discord.abc.Snowflake):
         if channel is None:
             raise ValueError("Channel id:{} doesn't exist!".format(channel_id))
 
-        return cls(dc, channel.name, channel.guild)
+        return cls(dc, channel.name, channel.guild.id)
 
-    def __init__(self, dc: discord.Client, channel_name: str, guild: str):
+    def __init__(self, dc: discord.Client, channel_name: str, guild_id: str):
         """
         Allows to specify an existing room (via name + guild or via id) or allows the creation of a future room by
         specifying a name and guild to create the channel in.
 
         :param dc:
         :param channel_name:
-        :param guild:
+        :param guild_id:
         """
         self._dc = dc
-        self._channel_id = self.channel_name_to_id(dc, channel_name, guild)  # Can be None if channel doesn't exist
+
+        if dc.get_guild(guild_id) is None:
+            raise ValueError("Can't find guild id {} to create DiscordRoom".format(guild_id))
+
+        self._guild_id = guild_id
         self._channel_name = channel_name
+        self._channel_id = self.channel_name_to_id(dc, channel_name, guild_id)  # Can be None if channel doesn't exist
 
     @property
     def created_at(self):
@@ -179,26 +185,61 @@ class DiscordRoom(Room, DiscordSender, discord.abc.Snowflake):
         return True
 
     def leave(self, reason: str = None) -> None:
+        """
+        Can't just leave a room
+        :param reason:
+        :return:
+        """
         log.error('Not implemented')
+
+    async def create_room(self):
+        guild = self._dc.get_guild(self._guild_id)
+
+        channel = await guild.create_text_channel(self._channel_name)
+
+        log.info("Created channel {} in guild {}".format(self._channel_name, guild.name))
+
+        self._channel_id = channel.id
 
     def create(self) -> None:
-        log.error('Not implemented')
+        if self.exists:
+            log.warning("Trying to create an already existing channel {}".format(self._channel_name))
+            raise RoomError("Room exists")
+
+        asyncio.run_coroutine_threadsafe(self.create_room(), loop=self._dc.loop)
 
     def destroy(self) -> None:
-        log.error('Not implemented')
+        asyncio.run_coroutine_threadsafe(self.discord_channel.delete(reason="Bot deletion command"), loop=self._dc.loop)
 
     def join(self, username: str = None, password: str = None) -> None:
-        log.error('Not implemented')
+        """
+        All public channels are already joined. Only private channels can be joined and we need an invite for that
+        :param username:
+        :param password:
+        :return:
+        """
+        raise NotImplementedError
 
     @property
     def topic(self) -> str:
-        log.error('Not implemented')
-        return ''
+        if not self.exists:
+            return ""
+
+        topic = self.discord_channel.topic
+        topic = "" if topic is None else topic
+
+        return topic
 
     @property
     def occupants(self) -> List[RoomOccupant]:
-        log.error('Not implemented')
-        return []
+        if not self.exists:
+            return []
+
+        occupants = []
+        for member in self.discord_channel.members:
+            occupants.append(DiscordRoomOccupant(self._dc, member.id, self._channel_id))
+
+        return occupants
 
     @property
     def exists(self) -> bool:
@@ -210,11 +251,8 @@ class DiscordRoom(Room, DiscordSender, discord.abc.Snowflake):
         Gets the guild_id this channel belongs to. None if it doesn't exist
         :return: Guild id or None
         """
-        if not self.exists:
-            return None
 
-        channel = self._dc.get_channel(self._channel_id)
-        return channel.guild.id
+        return self._guild_id
 
     @property
     def name(self) -> str:
@@ -226,7 +264,8 @@ class DiscordRoom(Room, DiscordSender, discord.abc.Snowflake):
         if self._channel_id is None:
             return self._channel_name
         else:
-            return self._dc.get_channel(self._channel_id).name
+            self._channel_name = self._dc.get_channel(self._channel_id).name
+            return self._channel_name
 
     @property
     def id(self):
@@ -257,7 +296,7 @@ class DiscordRoom(Room, DiscordSender, discord.abc.Snowflake):
             return False
 
         return other.id is not None and self.id is not None \
-            and other.id == self.id
+               and other.id == self.id
 
 
 class DiscordRoomOccupant(DiscordPerson, RoomOccupant, DiscordSender, discord.abc.Snowflake):
@@ -365,7 +404,17 @@ class DiscordBackend(ErrBot):
             log.debug('Unrecognised member update, ignoring...')
 
     def query_room(self, room):
-        return self.build_identifier(room)  # backward compatibility.
+        """
+        Major hacky function. we just implicitly assume we're just in one guild server
+
+        :param room:
+        :return:
+        """
+        room_name = room
+        if room_name.startswith("#"):
+            room_name = room_name[1:]
+
+        return DiscordRoom(self.client, room_name, self.client.guilds[0].id)
 
     def send_message(self, msg: Message):
         log.debug('From:\n%s\nto %s' % (msg.frm, msg.to))
