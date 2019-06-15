@@ -4,8 +4,10 @@ import sys
 from abc import ABC, abstractmethod
 from typing import List, Optional, Union
 
+from discord.utils import find
 from errbot.backends.base import Person, Message, Room, RoomOccupant, Presence, \
-    ONLINE, OFFLINE, AWAY, DND, Identifier
+    ONLINE, OFFLINE, AWAY, DND
+
 from errbot.core import ErrBot
 
 log = logging.getLogger(__name__)
@@ -44,6 +46,11 @@ class DiscordSender(ABC):
 
 
 class DiscordPerson(Person, DiscordSender, discord.abc.Snowflake):
+
+    @classmethod
+    def username_and_discriminator_to_userid(cls, dc: discord.client, username: str, discriminator: str):
+        return find(lambda m: m.name == username and m.discriminator == discriminator,
+                    dc.get_all_channels().guild.members)
 
     def __init__(self, dc: discord.Client, user_id: str):
         self._user_id = user_id
@@ -110,20 +117,31 @@ class DiscordPerson(Person, DiscordSender, discord.abc.Snowflake):
 
 class DiscordRoom(Room, DiscordSender, discord.abc.Snowflake):
 
+    @classmethod
+    def channel_name_to_id(cls, dc: discord.client, name: str):
+        matching = [channel for channel in dc.get_all_channels() if name == channel.name]
+
+        if len(matching) == 0:
+            return None
+
+        if len(matching) > 1:
+            log.warning("Multiple matching channels for channel name {}".format(name))
+
+        return matching[0].id
+
     def __init__(self, dc: discord.Client, channel_id: str = None, channel_name: str = None):
         if channel_id is not None and channel_name is not None:
             raise ValueError("channel_id and channel_name are mutually exclusive")
 
+        self._dc = dc
+
         if channel_name is not None:
-            # Channel doesn't exist
-            self._channel_name = channel_name
-            self._channel_id = None
+            self._channel_id = self.channel_name_to_id(dc, channel_name)  # Can be None if channel doesn't exist
         else:
             # Channel exists
             self._channel_id = channel_id
-            self._channel_name = dc.get_channel(channel_id).name
 
-        self._dc = dc
+        self._channel_name = dc.get_channel(channel_id).name
 
     @property
     def created_at(self):
@@ -260,9 +278,6 @@ class DiscordBackend(ErrBot):
     This is the Discord backend for Errbot.
     """
 
-    def build_identifier(self, text_representation: str) -> Identifier:
-        raise NotImplementedError()
-
     def __init__(self, config):
         super().__init__(config)
         identity = config.BOT_IDENTITY
@@ -308,10 +323,12 @@ class DiscordBackend(ErrBot):
                                    for mention in msg.mentions])
 
     def is_from_self(self, msg: Message) -> bool:
-        if not isinstance(msg.frm, discord.abc.Snowflake):
+        other = msg.frm
+
+        if not isinstance(other, DiscordPerson):
             return False
 
-        return msg.frm.id == self.bot_identifier.id
+        return other.id == self.bot_identifier.id
 
     async def on_member_update(self, before, after):
         if before.status != after.status:
@@ -426,3 +443,40 @@ class DiscordBackend(ErrBot):
     @property
     def mode(self):
         return 'discord'
+
+    def build_identifier(self, string_representation: str):
+        """
+        Valid forms of strreps:
+        user#discriminator@room -> RoomOccupant
+        user#discriminator      -> Person
+        user@room               -> (Ambiguous) RoomOccupant
+        user                    -> (Ambiguous) Person
+        #room                   -> Room
+        :param string_representation:
+        :return:
+        """
+        if not string_representation:
+            raise ValueError('Empty strrep')
+
+        if string_representation.startswith('#'):
+            return DiscordRoom(self.client, channel_name=string_representation[1:])
+
+        if '@' in string_representation:
+            user_and_discrim, room = string_representation.split('@')
+        else:
+            user_and_discrim = string_representation
+            room = None
+
+        if '#' in user_and_discrim:
+            user, discriminator = user_and_discrim.split('#')
+        else:
+            user = user_and_discrim
+            discriminator = None
+
+        user_id = DiscordPerson.username_and_discriminator_to_userid(self.client, user, discriminator)
+        channel_id = DiscordRoom.channel_name_to_id(self.client, room)
+
+        if room:
+            return DiscordRoomOccupant(self.client, user_id=user_id, channel_id=channel_id)
+
+        return DiscordPerson(self.client, user_id=user_id)
