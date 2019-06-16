@@ -47,9 +47,6 @@ class DiscordSender(ABC):
 
 class DiscordPerson(Person, DiscordSender, discord.abc.Snowflake):
 
-    def get_discord_messenger(self) -> discord.abc.Messageable:
-        return self.discord_user
-
     @classmethod
     def username_and_discriminator_to_userid(cls, dc: discord.client, username: str, discriminator: str) -> str:
         return find(lambda m: m.name == username and m.discriminator == discriminator, dc.get_all_members())
@@ -57,6 +54,9 @@ class DiscordPerson(Person, DiscordSender, discord.abc.Snowflake):
     def __init__(self, dc: discord.client, user_id: str):
         self._user_id = user_id
         self._dc = dc
+
+    def get_discord_messenger(self) -> discord.abc.Messageable:
+        return self.discord_user
 
     @property
     def created_at(self):
@@ -122,9 +122,6 @@ class DiscordRoom(Room, DiscordSender, discord.abc.Snowflake):
     2. They don't currently exist and we have a channel name and guild
     """
 
-    def get_discord_messenger(self):
-        return self.discord_channel
-
     @classmethod
     def channel_name_to_id(cls, dc: discord.client, name: str, guild_id: str):
         """
@@ -172,12 +169,24 @@ class DiscordRoom(Room, DiscordSender, discord.abc.Snowflake):
         self._channel_name = channel_name
         self._channel_id = self.channel_name_to_id(dc, channel_name, guild_id)  # Can be None if channel doesn't exist
 
+    def get_discord_messenger(self):
+        return self.discord_channel
+
     @property
     def created_at(self):
         return discord.utils.snowflake_time(self.id)
 
     def invite(self, *args) -> None:
-        log.error('Not implemented')
+        if not self.exists:
+            raise RuntimeError("Can't invite to a non-existent channel")
+
+        for identifier in args:
+            if not isinstance(identifier, DiscordPerson):
+                raise RuntimeError("Can't invite non Discord Users")
+
+            asyncio.run_coroutine_threadsafe(
+                self.discord_channel.set_permissions(identifier.discord_user, read_messages=True),
+                loop=self._dc.loop)
 
     @property
     def joined(self) -> bool:
@@ -218,7 +227,7 @@ class DiscordRoom(Room, DiscordSender, discord.abc.Snowflake):
         :param password:
         :return:
         """
-        raise NotImplementedError
+        raise RuntimeError("Can't join channels")
 
     @property
     def topic(self) -> str:
@@ -417,7 +426,7 @@ class DiscordBackend(ErrBot):
         return DiscordRoom(self.client, room_name, self.client.guilds[0].id)
 
     def send_message(self, msg: Message):
-        log.debug('From:\n%s\nto %s' % (msg.frm, msg.to))
+        log.debug('{} -> {}'.format(msg.frm, msg.to))
 
         recipient = msg.to
 
@@ -511,7 +520,6 @@ class DiscordBackend(ErrBot):
 
     def build_identifier(self, string_representation: str):
         """
-
         This needs a major rethink/rework since discord bots can be in different Guilds so room name clashes are
         certainly possible. For now we are only uniquely identifying users
 
